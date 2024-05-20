@@ -2,13 +2,14 @@ import json
 import argparse
 from typing import List, Union
 from loguru import logger
-from langchain_core.prompts import ChatPromptTemplate, FewShotChatMessagePromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_community.callbacks import get_openai_callback
 from dotenv import load_dotenv, find_dotenv
 from pydantic import BaseModel, Field
 from llm_models import get_llm
 import sys
+from postprocessing import get_postprocessed_sample
 from tqdm import tqdm
 
 logger.remove()
@@ -19,10 +20,10 @@ load_dotenv(find_dotenv())
 # System message prompt
 system_message = """Eres una herramienta de revisión de etiquetado de entidades en documentos. Recibirás una entrada en formato JSON con los siguientes campos:
 - Text: El texto etiquetado.
-- Spans: Lista de diccionarios. Cada diccionario contiene una palabra etiquetada con su entidad correspondiente.
+- Spans: Listado de spans. Cada uno contiene un span etiquetado con su entidad correspondiente.
 Lista de entidades:
 - ORG_JUR: Organizaciones legales (Tribunales, juzgados, poder judicial, sala de lo contencioso, etc.).
-- ORG_PRI: Organizaciones privadas o empresas.
+- ORG_PRI: Organizaciones o empresas privadas.
 - ORG_PUB: Organizaciones públicas (ayuntamientos, empresas públicas, Estado, administración, etc.).
 - PER: Nombre de la persona.
 - ART: Artículos legales.
@@ -30,7 +31,7 @@ Lista de entidades:
 - EXP: Números de expediente. Indicados por "expediente", "número de expediente" o "EXP".
 - NUM_VOT: Número de voto.
 - NUM_SENT: Número de sentencia.
-- ADD: Direcciones.
+- ADD: Direcciones de calle, avenida ... etc. No incluir correos electrónicos.
 - IBAN: Número de cuenta bancaria.
 - PHO: Número de teléfono o fax.
 - CUR: Cantidades de dinero.
@@ -40,19 +41,19 @@ Lista de entidades:
 - LOC: Ubicación (Ciudad, País, Pueblo, etc.).
 Importante:
 * Usar solo las etiquetas de entidades proporcionadas y de mantener el orden.
-* Devolver solo el JSON solo con el campo "spans", donde cada entrada contiene "word" y "label".
-* No devuelvas nunca el campo 'text'.
+* Nunca devuelvas el campo 'text'.
 Instrucciones:
 1. Revisa el etiquetado:
-   * Si una palabra está etiquetada con la entidad incorrecta, corrígela.
-   * Si una palabra está mal etiquetada, elimina la etiqueta.
+   * Si un span está etiquetado con la entidad incorrecta, corrígela.
+   * Si un span está mal etiquetado, elimina la etiqueta.
 2. Busca entidades no etiquetadas:
-   * Si encuentras entidades no etiquetadas, añádelas al final de la lista de spans."""
+   * Si encuentras spans no etiquetados añádelos al final de la lista de spans.
+Devolver solo el JSON solo con el campo "spans", donde cada entrada contiene "span" y "label"."""
 
 
 # Spans data structure
 class Span(BaseModel):
-    word: str = Field(description="Palabra etiquetada del texto")
+    span: str = Field(description="Palabra etiquetada del texto")
     label: str = Field(description="Entidad")
 
 
@@ -94,34 +95,42 @@ def process_samples(chain, samples):
 
         # Preprocessing to get the text of each entity
         input_spans_llm = []
+
         for span in spans:
-            # Chage "text" key by word to make it easier to the LLM
+            # Chage "text" key by "span"
             if "text" in span:
-                span["word"] = span["text"]
+                span["span"] = span["text"]
                 del span["text"]
             else:
                 start = span.get("start")
                 end = span.get("end")
                 if start is not None and end is not None and text is not None:
-                    span["word"] = text[start:end]
-            input_spans_llm.append({"word": span["word"], "label": span["label"]})
+                    span["span"] = text[start:end]
+
+            input_spans_llm.append({"span": span["span"], "label": span["label"]})
+
         input_llm = {"text": text, "spans": input_spans_llm}
         with get_openai_callback() as cb:
             input_llm_str = json.dumps(input_llm)
             try:
-                spans_updated = chain.invoke({"input_llm": input_llm_str})
+                output_spans_llm = chain.invoke({"input_llm": input_llm_str})
             except Exception as e:
-                logger.error(f"Error processing spans: {e}")
-                logger.error(f"LLM Output: {input_llm_str}")
-                spans_updated = {"spans": []}
+                logger.error(f"Error processing: {e}")
+                logger.error(f"LLM Output: {output_spans_llm}")
+                output_spans_llm = {
+                    "spans": (
+                        output_spans_llm["spans"] if "spans" in output_spans_llm else []
+                    )
+                }
             logger.info(
-                f"\n------\nInput LLM: {input_llm}\n------\nOutput LLM: {spans_updated}\n------\n{cb}"
+                f"\n------\nInput LLM: {input_llm}\n------\nOutput LLM: {output_spans_llm}\n------\n{cb}"
             )
 
-        if not "spans" in spans_updated:
-            spans_updated = {"spans": spans_updated}
+        if not "spans" in output_spans_llm:
+            output_spans_llm = {"spans": output_spans_llm}
 
-        updated_sample = {"text": text, "spans": spans_updated["spans"]}
+        # Post-processing
+        updated_sample = get_postprocessed_sample(text, output_spans_llm)
         updated_samples.append(updated_sample)
 
     return updated_samples
@@ -143,12 +152,12 @@ def main(llm, input_file_path, output_file_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Procesar un archivo JSONL de Prodigy y actualizar los spans usando OpenAI."
+        description="Procesar un archivo JSONL de Prodigy y actualizar los spans usando LLMs."
     )
     parser.add_argument("input_file", help="Ruta del archivo JSONL de entrada")
     parser.add_argument(
         "--llm",
-        default="vertexai",
+        default="azure",
         choices=["openai", "azure", "vertexai"],
         help="Choose one LLM",
     )

@@ -2,7 +2,7 @@ import json
 import argparse
 from typing import List, Union
 from loguru import logger
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, FewShotChatMessagePromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_community.callbacks import get_openai_callback
 from dotenv import load_dotenv, find_dotenv
@@ -17,40 +17,37 @@ logger.add(sys.stderr, level="INFO")
 load_dotenv(find_dotenv())
 
 # System message prompt
-system_message = """Eres una herramienta que revisa el etiquetado de entidades en documentos.
-Recibes una entrada JSON con los siguientes campos:
-- Text: El texto que ha sido etiquetado.
-- Spans: Lista de diccionarios. Cada diccionario es una palabra etiquetada con su entidad.
-
-Aquí está la lista de entidades:
-- ORG_JUR: Organizaciones legales (Tribunales, juzgados, poder judicial, sala de lo contencioso ...).
+system_message = """Eres una herramienta de revisión de etiquetado de entidades en documentos. Recibirás una entrada en formato JSON con los siguientes campos:
+- Text: El texto etiquetado.
+- Spans: Lista de diccionarios. Cada diccionario contiene una palabra etiquetada con su entidad correspondiente.
+Lista de entidades:
+- ORG_JUR: Organizaciones legales (Tribunales, juzgados, poder judicial, sala de lo contencioso, etc.).
 - ORG_PRI: Organizaciones privadas o empresas.
-- ORG_PUB: Organizaciones públicas (ayuntamientos, empresas públicas, Estado, administración ...).
+- ORG_PUB: Organizaciones públicas (ayuntamientos, empresas públicas, Estado, administración, etc.).
 - PER: Nombre de la persona.
 - ART: Artículos legales.
 - DAT: Fechas.
-- EXP: Números de expediente. Aparece indicatado por "expediente" o "número de expediente" o "EXP".
+- EXP: Números de expediente. Indicados por "expediente", "número de expediente" o "EXP".
 - NUM_VOT: Número de voto.
 - NUM_SENT: Número de sentencia.
 - ADD: Direcciones.
 - IBAN: Número de cuenta bancaria.
 - PHO: Número de teléfono o fax.
-- CUR: Dinero.
+- CUR: Cantidades de dinero.
 - CED: Número de cédula de identidad (letras o números).
 - DNI: DNI.
-- NIF: NIF o CIF,
-- LOC: Ubicación para una Ciudad, País, Pueblo ... etc.
-
-Pasos que debes seguir:
-1. Haz la revisión del etiquetado:
-* Si es otra entidad, puedes cambiarla.
-* Si está mal etiquetada, bórrala.
-2. Revisa si hay entidades no etiquetadas:
-* Si encuentras entidades no etiquetadas etiquétalas al final del JSON.
-
-Asegúrate de usar solo las etiquetas de entidades proporcionadas y mantener el orden (puede estar vacía si no hay entidades).
-Devuelve el JSON con el campo "spans" con cada "word" y "label". 
-No des explicaciones y no devuelvas nada más."""
+- NIF: NIF o CIF.
+- LOC: Ubicación (Ciudad, País, Pueblo, etc.).
+Importante:
+* Usar solo las etiquetas de entidades proporcionadas y de mantener el orden.
+* Devolver solo el JSON solo con el campo "spans", donde cada entrada contiene "word" y "label".
+* No devuelvas nunca el campo 'text'.
+Instrucciones:
+1. Revisa el etiquetado:
+   * Si una palabra está etiquetada con la entidad incorrecta, corrígela.
+   * Si una palabra está mal etiquetada, elimina la etiqueta.
+2. Busca entidades no etiquetadas:
+   * Si encuentras entidades no etiquetadas, añádelas al final de la lista de spans."""
 
 
 # Spans data structure
@@ -66,11 +63,11 @@ class Spans(BaseModel):
 # Inicializa el cliente de OpenAI a través de LangChain y el prompt
 def load_llm(model: str):
     llm = get_llm(model)
-    prompt = ChatPromptTemplate.from_messages(
+    final_prompt = ChatPromptTemplate.from_messages(
         [("system", system_message), ("human", "{input_llm}")]
     )
     parser = JsonOutputParser(pydantic_object=Spans)
-    chain = prompt | llm | parser
+    chain = final_prompt | llm | parser
     return chain
 
 

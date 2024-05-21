@@ -7,7 +7,7 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_community.callbacks import get_openai_callback
 from dotenv import load_dotenv, find_dotenv
 from pydantic import BaseModel, Field
-from llm_models import get_llm
+from load_llm import get_llm
 import sys
 from postprocessing import get_postprocessed_sample
 from tqdm import tqdm

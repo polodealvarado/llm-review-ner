@@ -1,5 +1,5 @@
 __pycache__
 .env
-llm-review-ner
+python_env
 *.jsonl
 */__pycache__
